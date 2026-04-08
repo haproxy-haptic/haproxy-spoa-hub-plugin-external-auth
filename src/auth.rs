@@ -73,9 +73,10 @@ pub fn send_auth_request(
         _ => agent.get(&url),
     };
 
-    // Forward configured headers
+    // Forward configured headers. Keys from extract_message_args are already
+    // lowercase (stripped hdr_ prefix), matching config.forward_headers entries.
     for (name, value) in headers {
-        if config.forward_headers.contains(&name.to_lowercase()) {
+        if config.forward_headers.contains(name) {
             let header_name = name.replace('_', "-");
             request = request.header(&header_name, value);
         }
