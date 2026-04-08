@@ -73,9 +73,7 @@ fn bench_send_auth_request(c: &mut Criterion) {
                 Ok(req) => {
                     let response = tiny_http::Response::from_string("ok")
                         .with_status_code(200)
-                        .with_header(
-                            tiny_http::Header::from_bytes("X-Auth-User", "alice").unwrap(),
-                        )
+                        .with_header(tiny_http::Header::from_bytes("X-Auth-User", "alice").unwrap())
                         .with_header(
                             tiny_http::Header::from_bytes("X-Auth-Roles", "admin,editor").unwrap(),
                         );
