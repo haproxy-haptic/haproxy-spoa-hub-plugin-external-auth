@@ -1,0 +1,23 @@
+plugin_dir = "/opt/spoa-plugins"
+default_timeout_ms = 100
+log_level = "info"
+
+[[listeners]]
+type = "unix"
+address = "/var/run/haproxy-spoa-hub.sock"
+
+[[plugins]]
+name = "external_auth"
+library = "libexternal_auth_plugin.so"
+messages = ["check-auth"]
+timeout_ms = 6000  # should exceed the plugin's internal timeout_ms
+
+[plugins.params]
+timeout_ms = 5000
+# fail_open = false          # default: deny on auth service error
+# method = "GET"             # default: GET
+# allow_plaintext = false    # default: require https:// auth URLs
+# forward_headers = ["authorization", "cookie", "x-forwarded-for",
+#                    "x-forwarded-proto", "x-forwarded-host",
+#                    "x-forwarded-uri"]
+# extract_headers = ["x-auth-user", "x-auth-roles"]

@@ -1,0 +1,190 @@
+stages:
+  - check
+  - build
+  - release
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+variables:
+  RUST_VERSION: "1.86"
+  CARGO_INCREMENTAL: "0"
+  GLIBC_VERSION: "2.36"
+
+.rules-code:
+  rules:
+    - changes:
+        - "**/*.rs"
+        - Cargo.toml
+        - Cargo.lock
+        - rustfmt.toml
+        - .gitlab-ci.yml
+
+# =============================================================================
+# Check Stage
+# =============================================================================
+
+fmt:
+  stage: check
+  image: rust:${RUST_VERSION}-bookworm
+  tags:
+    - saas-linux-small-amd64
+  needs: []
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: never
+    - !reference [.rules-code, rules]
+  interruptible: true
+  before_script:
+    - rustup component add rustfmt
+  script:
+    - cargo fmt -- --check
+
+clippy:
+  stage: check
+  image: rust:${RUST_VERSION}-bookworm
+  tags:
+    - saas-linux-large-amd64
+  needs: []
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: never
+    - !reference [.rules-code, rules]
+  interruptible: true
+  script:
+    - rustup component add clippy
+    - cargo clippy --workspace -- -D warnings
+
+test:
+  stage: check
+  image: rust:${RUST_VERSION}-bookworm
+  tags:
+    - saas-linux-large-amd64
+  needs: []
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - !reference [.rules-code, rules]
+  interruptible: true
+  script:
+    - cargo test --workspace
+
+bench:
+  stage: check
+  image: rust:${RUST_VERSION}-bookworm
+  tags:
+    - saas-linux-large-amd64
+  needs: []
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - !reference [.rules-code, rules]
+  interruptible: true
+  script:
+    - cargo bench 2>&1 | tee bench-output.txt
+  artifacts:
+    paths:
+      - bench-output.txt
+      - target/criterion/
+    expire_in: 1 week
+
+# =============================================================================
+# Build Stage — parallel matrix for all supported architectures
+# =============================================================================
+
+build:
+  stage: build
+  image: rust:${RUST_VERSION}-bookworm
+  tags:
+    - saas-linux-large-amd64
+  needs: []
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - !reference [.rules-code, rules]
+  interruptible: true
+  parallel:
+    matrix:
+      - ARCH: amd64
+        RUST_TARGET: x86_64-unknown-linux-gnu
+        CROSS_PKG: ""
+        CROSS_LINKER: ""
+      - ARCH: arm64
+        RUST_TARGET: aarch64-unknown-linux-gnu
+        CROSS_PKG: gcc-aarch64-linux-gnu
+        CROSS_LINKER: aarch64-linux-gnu-gcc
+      - ARCH: armv7
+        RUST_TARGET: armv7-unknown-linux-gnueabihf
+        CROSS_PKG: gcc-arm-linux-gnueabihf
+        CROSS_LINKER: arm-linux-gnueabihf-gcc
+  before_script:
+    - rustup target add "${RUST_TARGET}"
+    - |
+      if [ -n "${CROSS_PKG}" ]; then
+        apt-get update -qq && apt-get install -y -qq "${CROSS_PKG}" >/dev/null
+        mkdir -p .cargo
+        cat > .cargo/config.toml <<EOF
+      [target.${RUST_TARGET}]
+      linker = "${CROSS_LINKER}"
+      EOF
+      fi
+  script:
+    - cargo build --release --target "${RUST_TARGET}"
+    - |
+      mkdir -p artifacts
+      cp "target/${RUST_TARGET}/release/libexternal_auth_plugin.so" \
+         "artifacts/libexternal_auth_plugin-${ARCH}-glibc${GLIBC_VERSION}.so"
+      ls -lh "artifacts/libexternal_auth_plugin-${ARCH}-glibc${GLIBC_VERSION}.so"
+  artifacts:
+    paths:
+      - artifacts/
+    expire_in: 1 week
+
+# =============================================================================
+# Release Stage (triggered by v* tags)
+# =============================================================================
+
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  tags:
+    - saas-linux-small-amd64
+  needs:
+    - build
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v.*/
+  variables:
+    GIT_DEPTH: 0
+  script:
+    - |
+      VERSION="${CI_COMMIT_TAG#v}"
+      awk -v ver="${VERSION}" '
+        /^## \[/ { if (found) exit; if (index($0, "[" ver "]")) found=1 }
+        found { print }
+      ' CHANGELOG.md > /tmp/release-notes.md
+      if [ ! -s /tmp/release-notes.md ]; then
+        echo "Release ${CI_COMMIT_TAG}" > /tmp/release-notes.md
+      fi
+      cat /tmp/release-notes.md
+  release:
+    tag_name: $CI_COMMIT_TAG
+    name: "$CI_COMMIT_TAG"
+    description: /tmp/release-notes.md
+    assets:
+      links:
+        - name: "libexternal_auth_plugin-amd64-glibc${GLIBC_VERSION}.so"
+          url: "${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/artifacts/libexternal_auth_plugin-amd64-glibc${GLIBC_VERSION}.so?job=build%3A+%5Bamd64%5D"
+          link_type: package
+        - name: "libexternal_auth_plugin-arm64-glibc${GLIBC_VERSION}.so"
+          url: "${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/artifacts/libexternal_auth_plugin-arm64-glibc${GLIBC_VERSION}.so?job=build%3A+%5Barm64%5D"
+          link_type: package
+        - name: "libexternal_auth_plugin-armv7-glibc${GLIBC_VERSION}.so"
+          url: "${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/artifacts/libexternal_auth_plugin-armv7-glibc${GLIBC_VERSION}.so?job=build%3A+%5Barmv7%5D"
+          link_type: package
