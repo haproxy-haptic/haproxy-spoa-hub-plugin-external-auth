@@ -67,20 +67,22 @@ fn bench_send_auth_request(c: &mut Criterion) {
     let auth_url = format!("http://{addr}");
 
     // Background thread that responds to every request with 200 + auth headers
-    std::thread::spawn(move || loop {
-        match server.recv() {
-            Ok(req) => {
-                let response = tiny_http::Response::from_string("ok")
-                    .with_status_code(200)
-                    .with_header(
-                        tiny_http::Header::from_bytes("X-Auth-User", "alice").unwrap(),
-                    )
-                    .with_header(
-                        tiny_http::Header::from_bytes("X-Auth-Roles", "admin,editor").unwrap(),
-                    );
-                let _ = req.respond(response);
+    std::thread::spawn(move || {
+        loop {
+            match server.recv() {
+                Ok(req) => {
+                    let response = tiny_http::Response::from_string("ok")
+                        .with_status_code(200)
+                        .with_header(
+                            tiny_http::Header::from_bytes("X-Auth-User", "alice").unwrap(),
+                        )
+                        .with_header(
+                            tiny_http::Header::from_bytes("X-Auth-Roles", "admin,editor").unwrap(),
+                        );
+                    let _ = req.respond(response);
+                }
+                Err(_) => break,
             }
-            Err(_) => break,
         }
     });
 
