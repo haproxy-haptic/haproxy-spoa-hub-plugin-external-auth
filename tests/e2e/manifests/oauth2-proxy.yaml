@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oauth2-proxy
+  namespace: e2e-auth
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oauth2-proxy
+  template:
+    metadata:
+      labels:
+        app: oauth2-proxy
+    spec:
+      containers:
+        - name: oauth2-proxy
+          image: quay.io/oauth2-proxy/oauth2-proxy:v7.7.1
+          ports:
+            - containerPort: 4180
+          args:
+            - --http-address=0.0.0.0:4180
+            - --provider=oidc
+            - --skip-oidc-discovery=true
+            - --oidc-issuer-url=http://mock-oidc:8080/default
+            - --login-url=http://localhost:8080/mock-oidc/default/authorize
+            - --redeem-url=http://mock-oidc:8080/default/token
+            - --oidc-jwks-url=http://mock-oidc:8080/default/jwks
+            - --profile-url=http://mock-oidc:8080/default/userinfo
+            - --client-id=test-client
+            - --client-secret=test-secret
+            - --cookie-secret=7f2e46ba277f7c7ef700740afb0f18a2
+            - --redirect-url=http://localhost:8080/oauth2/callback
+            - --upstream=static://202
+            - --email-domain=*
+            - --skip-provider-button=true
+            - --cookie-secure=false
+            - --set-xauthrequest=true
+            - --scope=openid email profile
+            - --insecure-oidc-allow-unverified-email=true
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: 4180
+            initialDelaySeconds: 2
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: oauth2-proxy
+  namespace: e2e-auth
+spec:
+  selector:
+    app: oauth2-proxy
+  ports:
+    - port: 4180
+      targetPort: 4180

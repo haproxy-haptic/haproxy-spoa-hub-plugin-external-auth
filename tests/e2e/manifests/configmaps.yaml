@@ -1,0 +1,88 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: haproxy-config
+  namespace: e2e-auth
+data:
+  haproxy.cfg: |
+    global
+        log stdout format raw local0 info
+
+    defaults
+        mode http
+        log global
+        timeout connect 5s
+        timeout client 30s
+        timeout server 30s
+
+    frontend http
+        bind *:8080
+
+        filter spoe engine external-auth config /etc/haproxy/spoe-external-auth.conf
+
+        # Set auth URL dynamically, then trigger SPOE group
+        http-request set-var(txn.auth_url) str(http://oauth2-proxy:4180/oauth2/auth) if !{ path_beg /oauth2/ } !{ path_beg /mock-oidc/ }
+        http-request send-spoe-group external-auth check-auth-group if { var(txn.auth_url) -m found }
+
+        # Unauthenticated non-oauth2 requests: redirect to sign-in
+        http-request redirect location /oauth2/start?rd=%[url] code 302 if !{ var(txn.spoe.external_auth.allowed) -m bool } !{ path_beg /oauth2/ } !{ path_beg /mock-oidc/ }
+
+        # Authenticated non-oauth2 requests: return with auth identity
+        http-request return status 200 content-type "text/plain" lf-string "allowed=true\nuser=%[var(txn.spoe.external_auth.x_auth_request_user)]\nemail=%[var(txn.spoe.external_auth.x_auth_request_email)]\n" if !{ path_beg /oauth2/ } !{ path_beg /mock-oidc/ }
+
+        use_backend oauth2-proxy if { path_beg /oauth2/ }
+        use_backend mock-oidc if { path_beg /mock-oidc/ }
+
+    backend oauth2-proxy
+        server proxy oauth2-proxy:4180
+
+    backend mock-oidc
+        http-request replace-path /mock-oidc/(.*) /\1
+        server oidc mock-oidc:8080
+
+    backend spoa-hub-backend
+        mode spop
+        server hub /var/run/spoe/hub.sock
+
+  spoe-external-auth.conf: |
+    [external-auth]
+    spoe-agent external-auth-agent
+        groups check-auth-group
+        option var-prefix spoe
+        option continue-on-error
+        timeout hello      2s
+        timeout idle       5m
+        timeout processing 6s
+        use-backend spoa-hub-backend
+
+    spoe-message check-auth
+        args auth_url=var(txn.auth_url) hdr_authorization=req.hdr(Authorization) hdr_cookie=req.hdr(Cookie) hdr_x_forwarded_for=req.hdr(X-Forwarded-For) hdr_x_forwarded_proto=req.hdr(X-Forwarded-Proto) hdr_x_forwarded_host=req.hdr(X-Forwarded-Host) hdr_x_forwarded_uri=req.hdr(X-Forwarded-Uri)
+
+    spoe-group check-auth-group
+        messages check-auth
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hub-config
+  namespace: e2e-auth
+data:
+  config.toml: |
+    plugin_dir = "/etc/haproxy-spoa-hub/plugins"
+    default_timeout_ms = 100
+    log_level = "debug"
+
+    [[listeners]]
+    type = "unix"
+    address = "/var/run/spoe/hub.sock"
+
+    [[plugins]]
+    name = "external_auth"
+    library = "libexternal_auth_plugin.so"
+    messages = ["check-auth"]
+    timeout_ms = 6000
+
+    [plugins.params]
+    timeout_ms = 5000
+    allow_plaintext = true
+    extract_headers = ["x-auth-request-user", "x-auth-request-email", "x-auth-request-groups", "x-auth-request-access-token"]
