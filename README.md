@@ -15,7 +15,7 @@ The plugin supports configurable header forwarding, response header extraction (
 ### Prerequisites
 
 - [haproxy-spoa-hub](https://gitlab.com/haproxy-haptic/haproxy-spoa-hub) built and running
-- HAProxy >= 2.6 with SPOE support
+- HAProxy >= 3.0 with SPOE support
 - Rust toolchain (>= 1.86) for building the plugin
 
 ### Build
@@ -64,10 +64,75 @@ The auth URL is passed dynamically from HAProxy as an SPOE message argument. Thi
 
 **SPOE configuration** (`spoe-external-auth.conf`):
 
+The `auth_url` argument can be a literal string via `str()` (for a fixed auth endpoint) or a HAProxy variable via `var()` (for per-path routing). The `path` argument is optional — omit it for auth services like oauth2-proxy that use a fixed check endpoint.
+
 ```
 [external-auth]
 spoe-agent external-auth-agent
     messages check-auth
+    option var-prefix spoe
+    option continue-on-error
+    timeout hello      2s
+    timeout idle       5m
+    timeout processing 6s
+    use-backend spoa-hub-backend
+
+spoe-message check-auth
+    args auth_url=str(https://oauth2-proxy.internal/oauth2/auth) \
+         path=path \
+         hdr_authorization=req.hdr(Authorization) \
+         hdr_cookie=req.hdr(Cookie) \
+         hdr_x_forwarded_for=req.hdr(X-Forwarded-For) \
+         hdr_x_forwarded_proto=req.hdr(X-Forwarded-Proto) \
+         hdr_x_forwarded_host=req.hdr(X-Forwarded-Host) \
+         hdr_x_forwarded_uri=req.hdr(X-Forwarded-Uri)
+    event on-frontend-http-request
+```
+
+**HAProxy frontend** (fixed auth URL):
+
+```haproxy
+frontend http
+    bind *:80
+
+    filter spoe engine external-auth config /etc/haproxy/spoe-external-auth.conf
+
+    # Deny unauthenticated requests
+    http-request deny deny_status 401 \
+        unless { var(txn.spoe.external_auth.allowed) -m bool }
+
+    # Redirect if auth service provided a redirect URL
+    http-request redirect location %[var(txn.spoe.external_auth.redirect_url)] \
+        if !{ var(txn.spoe.external_auth.allowed) -m bool } \
+           { var(txn.spoe.external_auth.redirect_url) -m found }
+
+    # Forward auth identity to backend
+    http-request set-header X-Auth-User %[var(txn.spoe.external_auth.x_auth_user)] \
+        if { var(txn.spoe.external_auth.x_auth_user) -m found }
+
+    default_backend app
+
+backend spoa-hub-backend
+    mode spop
+    server hub /var/run/haproxy-spoa-hub.sock
+
+backend app
+    server web 127.0.0.1:8080
+```
+
+**Dynamic per-path routing** with `send-spoe-group`:
+
+To route different paths to different auth services, use a `spoe-group` triggered by `http-request send-spoe-group` instead of an event-driven message. This lets you `set-var` the auth URL first, since `send-spoe-group` executes within `http-request` rule processing.
+
+!!! warning
+    Do not use `http-request set-var` with event-driven SPOE messages (`on-frontend-http-request`). The event fires **before** `http-request` rules, so variables set with `set-var` are not yet available.
+
+SPOE configuration (`spoe-external-auth.conf`) for dynamic routing:
+
+```
+[external-auth]
+spoe-agent external-auth-agent
+    groups check-auth-group
     option var-prefix spoe
     option continue-on-error
     timeout hello      2s
@@ -84,20 +149,23 @@ spoe-message check-auth
          hdr_x_forwarded_proto=req.hdr(X-Forwarded-Proto) \
          hdr_x_forwarded_host=req.hdr(X-Forwarded-Host) \
          hdr_x_forwarded_uri=req.hdr(X-Forwarded-Uri)
-    event on-frontend-http-request
+
+spoe-group check-auth-group
+    messages check-auth
 ```
 
-**HAProxy frontend**:
+HAProxy frontend:
 
 ```haproxy
 frontend http
     bind *:80
 
-    # Set auth URL dynamically per path
+    filter spoe engine external-auth config /etc/haproxy/spoe-external-auth.conf
+
+    # Set auth URL per path, then trigger SPOE group
     http-request set-var(txn.auth_url) str(https://oauth2-proxy.internal/oauth2/auth) if { path_beg /dashboard }
     http-request set-var(txn.auth_url) str(https://auth-api.internal/check)          if { path_beg /api }
-
-    filter spoe engine external-auth config /etc/haproxy/spoe-external-auth.conf
+    http-request send-spoe-group external-auth check-auth-group if { var(txn.auth_url) -m found }
 
     # Deny unauthenticated requests
     http-request deny deny_status 401 \
@@ -141,8 +209,8 @@ backend app
 
 | Argument | Type | Required | Description |
 |----------|------|----------|-------------|
-| `auth_url` | string | yes | URL of the auth service (set from HAProxy via `set-var`) |
-| `path` | string | yes | Request URI path and query string |
+| `auth_url` | string | yes | URL of the auth service (via `str()` or `var()`) |
+| `path` | string | no | Request path appended to `auth_url` (omit for fixed-endpoint auth services like oauth2-proxy) |
 | `hdr_<name>` | string | no | Header values to forward (e.g., `hdr_authorization`) |
 
 ### Output Variables
