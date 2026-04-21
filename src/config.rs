@@ -24,34 +24,29 @@ impl PluginConfig {
         context: &PluginContext,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let allow_plaintext = context
-            .config
-            .get("allow_plaintext")
+            .get_config("allow_plaintext")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
         let timeout_ms = context
-            .config
-            .get("timeout_ms")
+            .get_config("timeout_ms")
             .and_then(|v| v.as_integer())
             .map(|n| n as u64)
             .unwrap_or(5000);
 
         let fail_open = context
-            .config
-            .get("fail_open")
+            .get_config("fail_open")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
         let method = context
-            .config
-            .get("method")
+            .get_config("method")
             .and_then(|v| v.as_str())
             .unwrap_or("GET")
             .to_uppercase();
 
         let forward_headers = context
-            .config
-            .get("forward_headers")
+            .get_config("forward_headers")
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
@@ -66,8 +61,7 @@ impl PluginConfig {
             });
 
         let extract_headers = context
-            .config
-            .get("extract_headers")
+            .get_config("extract_headers")
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
