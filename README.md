@@ -247,4 +247,4 @@ Plugin processing overhead (excluding auth service response time):
 
 ## License
 
-[MIT](LICENSE)
+Licensed under the [Apache License 2.0](LICENSE).
