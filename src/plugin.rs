@@ -2,8 +2,9 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use abi_stable::std_types::Tuple2;
-use haproxy_spoa_hub_plugin_api::{ProcessingResult, SpoeMessage, SpoeValue, define_plugin};
+use haproxy_spoa_hub_plugin_api::{
+    ProcessingResult, SpoeMessage, SpoeValue, Tuple2, define_plugin,
+};
 
 use crate::auth;
 use crate::config::PluginConfig;
@@ -86,30 +87,16 @@ define_plugin!(ExternalAuthPlugin, {
 fn extract_message_args(
     message: &SpoeMessage,
 ) -> (Option<String>, String, HashMap<String, String>) {
-    let mut auth_url = None;
-    let mut path = String::new();
-    let mut headers = HashMap::new();
+    let auth_url = message.get_string("auth_url").map(String::from);
+    let path = message.get_string("path").unwrap_or_default().to_string();
 
+    let mut headers = HashMap::new();
     for Tuple2(key, value) in message.args.iter() {
         let k = key.as_str();
-        match k {
-            "auth_url" => {
-                if let SpoeValue::String(s) = value {
-                    auth_url = Some(s.as_str().to_string());
-                }
+        if let Some(header_name) = k.strip_prefix("hdr_") {
+            if let SpoeValue::String(s) = value {
+                headers.insert(header_name.to_string(), s.as_str().to_string());
             }
-            "path" => {
-                if let SpoeValue::String(s) = value {
-                    path = s.as_str().to_string();
-                }
-            }
-            _ if k.starts_with("hdr_") => {
-                if let SpoeValue::String(s) = value {
-                    let header_name = k.strip_prefix("hdr_").unwrap().to_string();
-                    headers.insert(header_name, s.as_str().to_string());
-                }
-            }
-            _ => {}
         }
     }
 

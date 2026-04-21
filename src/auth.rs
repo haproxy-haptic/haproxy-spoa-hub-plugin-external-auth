@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
-use abi_stable::std_types::{RString, RVec};
-use haproxy_spoa_hub_plugin_api::{SpoeValue, TxnVariable, VarScope};
+use haproxy_spoa_hub_plugin_api::{RVec, SpoeValue, TxnVariable};
 
 use crate::config::PluginConfig;
 
@@ -18,41 +17,35 @@ impl AuthDecision {
     pub fn to_variables(&self) -> RVec<TxnVariable> {
         let mut vars = RVec::with_capacity(3 + self.extracted_headers.len());
 
-        vars.push(TxnVariable {
-            scope: VarScope::Transaction,
-            name: RString::from("allowed"),
-            value: SpoeValue::Bool(self.allowed),
-        });
-
-        vars.push(TxnVariable {
-            scope: VarScope::Transaction,
-            name: RString::from("status_code"),
-            value: SpoeValue::Uint32(self.status_code),
-        });
+        vars.push(TxnVariable::transaction(
+            "allowed",
+            SpoeValue::Bool(self.allowed),
+        ));
+        vars.push(TxnVariable::transaction(
+            "status_code",
+            SpoeValue::Uint32(self.status_code),
+        ));
 
         if let Some(ref url) = self.redirect_url {
-            vars.push(TxnVariable {
-                scope: VarScope::Transaction,
-                name: RString::from("redirect_url"),
-                value: SpoeValue::String(RString::from(url.as_str())),
-            });
+            vars.push(TxnVariable::transaction(
+                "redirect_url",
+                SpoeValue::String(url.as_str().into()),
+            ));
         }
 
         if let Some(ref err) = self.error {
-            vars.push(TxnVariable {
-                scope: VarScope::Transaction,
-                name: RString::from("error"),
-                value: SpoeValue::String(RString::from(err.as_str())),
-            });
+            vars.push(TxnVariable::transaction(
+                "error",
+                SpoeValue::String(err.as_str().into()),
+            ));
         }
 
         for (name, value) in &self.extracted_headers {
             let var_name = name.replace('-', "_");
-            vars.push(TxnVariable {
-                scope: VarScope::Transaction,
-                name: RString::from(var_name.as_str()),
-                value: SpoeValue::String(RString::from(value.as_str())),
-            });
+            vars.push(TxnVariable::transaction(
+                var_name.as_str(),
+                SpoeValue::String(value.as_str().into()),
+            ));
         }
 
         vars
