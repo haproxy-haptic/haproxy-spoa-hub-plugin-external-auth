@@ -12,9 +12,11 @@ workflow:
     - if: $CI_COMMIT_TAG
 
 variables:
-  RUST_VERSION: "1.86"
+  # renovate: datasource=docker depName=rust
+  RUST_VERSION: "1.94"
   CARGO_INCREMENTAL: "0"
   GLIBC_VERSION: "2.36"
+  LIB_NAME: "libexternal_auth_plugin"
 
 .rules-code:
   rules:
@@ -23,6 +25,7 @@ variables:
         - Cargo.toml
         - Cargo.lock
         - rustfmt.toml
+        - "tests/**/*"
         - .gitlab-ci.yml
 
 # =============================================================================
@@ -165,9 +168,9 @@ build:
     - cargo build --release --target "${RUST_TARGET}"
     - |
       mkdir -p artifacts
-      cp "target/${RUST_TARGET}/release/libexternal_auth_plugin.so" \
-         "artifacts/libexternal_auth_plugin-${ARCH}-glibc${GLIBC_VERSION}.so"
-      ls -lh "artifacts/libexternal_auth_plugin-${ARCH}-glibc${GLIBC_VERSION}.so"
+      cp "target/${RUST_TARGET}/release/${LIB_NAME}.so" \
+         "artifacts/${LIB_NAME}-${ARCH}-glibc${GLIBC_VERSION}.so"
+      ls -lh "artifacts/${LIB_NAME}-${ARCH}-glibc${GLIBC_VERSION}.so"
   artifacts:
     paths:
       - artifacts/
@@ -205,12 +208,12 @@ release:
     description: /tmp/release-notes.md
     assets:
       links:
-        - name: "libexternal_auth_plugin-amd64-glibc${GLIBC_VERSION}.so"
-          url: "${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/artifacts/libexternal_auth_plugin-amd64-glibc${GLIBC_VERSION}.so?job=build%3A+%5Bamd64%5D"
+        - name: "${LIB_NAME}-amd64-glibc${GLIBC_VERSION}.so"
+          url: "${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/artifacts/${LIB_NAME}-amd64-glibc${GLIBC_VERSION}.so?job=build%3A+%5Bamd64%5D"
           link_type: package
-        - name: "libexternal_auth_plugin-arm64-glibc${GLIBC_VERSION}.so"
-          url: "${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/artifacts/libexternal_auth_plugin-arm64-glibc${GLIBC_VERSION}.so?job=build%3A+%5Barm64%5D"
+        - name: "${LIB_NAME}-arm64-glibc${GLIBC_VERSION}.so"
+          url: "${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/artifacts/${LIB_NAME}-arm64-glibc${GLIBC_VERSION}.so?job=build%3A+%5Barm64%5D"
           link_type: package
-        - name: "libexternal_auth_plugin-armv7-glibc${GLIBC_VERSION}.so"
-          url: "${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/artifacts/libexternal_auth_plugin-armv7-glibc${GLIBC_VERSION}.so?job=build%3A+%5Barmv7%5D"
+        - name: "${LIB_NAME}-armv7-glibc${GLIBC_VERSION}.so"
+          url: "${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/artifacts/${LIB_NAME}-armv7-glibc${GLIBC_VERSION}.so?job=build%3A+%5Barmv7%5D"
           link_type: package
