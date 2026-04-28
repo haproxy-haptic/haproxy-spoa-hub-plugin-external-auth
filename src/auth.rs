@@ -4,6 +4,33 @@ use haproxy_spoa_hub_plugin_api::{RVec, SpoeValue, TxnVariable};
 
 use crate::config::PluginConfig;
 
+/// Resolved per-request parameters. Each field is either set by a SPOE
+/// message argument or falls back to the plugin-level config. The plugin
+/// builds one of these per request before calling `send_auth_request`,
+/// which lets HAPTIC chart users set per-ingress overrides for
+/// `auth-method` / `auth-headers-request` / `auth-response-headers`
+/// without restarting the plugin.
+#[derive(Debug)]
+pub struct RequestParams<'a> {
+    pub method: &'a str,
+    pub forward_headers: &'a [String],
+    pub extract_headers: &'a [String],
+}
+
+impl<'a> RequestParams<'a> {
+    /// Borrow all three fields from the plugin-level config — the shape
+    /// used when no SPOE message arg overrides them. Convenient for
+    /// tests and for the plugin's "no override" fast path.
+    #[must_use]
+    pub fn from_config(config: &'a PluginConfig) -> Self {
+        Self {
+            method: &config.method,
+            forward_headers: &config.forward_headers,
+            extract_headers: &config.extract_headers,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct AuthDecision {
     pub allowed: bool,
@@ -55,21 +82,24 @@ impl AuthDecision {
 pub fn send_auth_request(
     agent: &ureq::Agent,
     config: &PluginConfig,
+    params: &RequestParams<'_>,
     auth_url: &str,
     path: &str,
     headers: &HashMap<String, String>,
 ) -> AuthDecision {
     let url = format!("{auth_url}{path}");
 
-    let mut request = match config.method.as_str() {
+    // Method strings reach us already upper-cased and validated against
+    // the allowed list in config.rs (currently GET / HEAD only).
+    let mut request = match params.method {
         "HEAD" => agent.head(&url),
         _ => agent.get(&url),
     };
 
     // Forward configured headers. Keys from extract_message_args are already
-    // lowercase (stripped hdr_ prefix), matching config.forward_headers entries.
+    // lowercase (stripped hdr_ prefix), matching forward_headers entries.
     for (name, value) in headers {
-        if config.forward_headers.contains(name) {
+        if params.forward_headers.iter().any(|h| h == name) {
             let header_name = name.replace('_', "-");
             request = request.header(&header_name, value);
         }
@@ -78,7 +108,7 @@ pub fn send_auth_request(
     // Agent is configured with http_status_as_error(false) and max_redirects(0),
     // so all responses come through Ok() and we handle status codes ourselves.
     match request.call() {
-        Ok(response) => classify_response(config, response),
+        Ok(response) => classify_response(config, params, response),
         Err(ureq::Error::Timeout(timeout)) => {
             let msg = format!("auth subrequest timed out: {timeout}");
             log_failure(config, &msg);
@@ -92,14 +122,18 @@ pub fn send_auth_request(
     }
 }
 
-fn classify_response(config: &PluginConfig, response: http::Response<ureq::Body>) -> AuthDecision {
+fn classify_response(
+    config: &PluginConfig,
+    params: &RequestParams<'_>,
+    response: http::Response<ureq::Body>,
+) -> AuthDecision {
     let status = response.status().as_u16() as u32;
     let headers = response.headers();
 
     if (200..300).contains(&status) {
-        // 2xx — allowed, extract configured response headers
+        // 2xx — allowed, extract per-request response headers
         let mut extracted = Vec::new();
-        for header_name in &config.extract_headers {
+        for header_name in params.extract_headers {
             let header_key = header_name.replace('_', "-");
             if let Some(value) = headers.get(header_key.as_str()) {
                 if let Ok(val_str) = value.to_str() {
