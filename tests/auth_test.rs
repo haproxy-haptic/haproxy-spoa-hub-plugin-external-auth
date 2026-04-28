@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use external_auth_plugin::auth::{AuthDecision, send_auth_request};
+use external_auth_plugin::auth::{AuthDecision, RequestParams, send_auth_request};
 use external_auth_plugin::config::PluginConfig;
 use haproxy_spoa_hub_plugin_api::{SpoeValue, VarScope};
 
@@ -147,7 +147,14 @@ fn auth_request_200_allowed() {
     let config = make_config();
     let headers = HashMap::new();
 
-    let decision = send_auth_request(&agent, &config, &auth_url, "/test", &headers);
+    let decision = send_auth_request(
+        &agent,
+        &config,
+        &RequestParams::from_config(&config),
+        &auth_url,
+        "/test",
+        &headers,
+    );
     assert!(decision.allowed);
     assert_eq!(decision.status_code, 200);
     assert!(decision.error.is_none());
@@ -171,7 +178,14 @@ fn auth_request_401_denied() {
     let config = make_config();
     let headers = HashMap::new();
 
-    let decision = send_auth_request(&agent, &config, &auth_url, "/test", &headers);
+    let decision = send_auth_request(
+        &agent,
+        &config,
+        &RequestParams::from_config(&config),
+        &auth_url,
+        "/test",
+        &headers,
+    );
     assert!(!decision.allowed);
     assert_eq!(decision.status_code, 401);
     assert!(decision.error.is_none());
@@ -195,7 +209,14 @@ fn auth_request_403_denied() {
     let config = make_config();
     let headers = HashMap::new();
 
-    let decision = send_auth_request(&agent, &config, &auth_url, "/test", &headers);
+    let decision = send_auth_request(
+        &agent,
+        &config,
+        &RequestParams::from_config(&config),
+        &auth_url,
+        "/test",
+        &headers,
+    );
     assert!(!decision.allowed);
     assert_eq!(decision.status_code, 403);
 
@@ -238,7 +259,14 @@ fn forwards_default_headers() {
     headers.insert("authorization".into(), "Bearer token123".into());
     headers.insert("cookie".into(), "session=abc".into());
 
-    let decision = send_auth_request(&agent, &config, &auth_url, "/test", &headers);
+    let decision = send_auth_request(
+        &agent,
+        &config,
+        &RequestParams::from_config(&config),
+        &auth_url,
+        "/test",
+        &headers,
+    );
     assert!(decision.allowed);
 
     handle.join().unwrap();
@@ -279,7 +307,14 @@ fn custom_forward_headers_filters() {
     headers.insert("authorization".into(), "Bearer token123".into());
     headers.insert("x-custom-token".into(), "my-token".into());
 
-    let decision = send_auth_request(&agent, &config, &auth_url, "/test", &headers);
+    let decision = send_auth_request(
+        &agent,
+        &config,
+        &RequestParams::from_config(&config),
+        &auth_url,
+        "/test",
+        &headers,
+    );
     assert!(decision.allowed);
 
     handle.join().unwrap();
@@ -296,7 +331,14 @@ fn unreachable_fail_closed() {
     let headers = HashMap::new();
 
     // Use a port that's almost certainly not listening
-    let decision = send_auth_request(&agent, &config, "http://127.0.0.1:19999", "/test", &headers);
+    let decision = send_auth_request(
+        &agent,
+        &config,
+        &RequestParams::from_config(&config),
+        "http://127.0.0.1:19999",
+        "/test",
+        &headers,
+    );
     assert!(!decision.allowed);
     assert_eq!(decision.status_code, 0);
     assert!(decision.error.is_some());
@@ -309,7 +351,14 @@ fn unreachable_fail_open() {
     config.fail_open = true;
     let headers = HashMap::new();
 
-    let decision = send_auth_request(&agent, &config, "http://127.0.0.1:19999", "/test", &headers);
+    let decision = send_auth_request(
+        &agent,
+        &config,
+        &RequestParams::from_config(&config),
+        "http://127.0.0.1:19999",
+        "/test",
+        &headers,
+    );
     assert!(decision.allowed);
     assert_eq!(decision.status_code, 0);
     assert!(decision.error.is_some());
@@ -331,7 +380,14 @@ fn server_error_500_fail_closed() {
     let config = make_config();
     let headers = HashMap::new();
 
-    let decision = send_auth_request(&agent, &config, &auth_url, "/test", &headers);
+    let decision = send_auth_request(
+        &agent,
+        &config,
+        &RequestParams::from_config(&config),
+        &auth_url,
+        "/test",
+        &headers,
+    );
     assert!(!decision.allowed);
     assert_eq!(decision.status_code, 500);
     assert!(decision.error.is_some());
@@ -360,7 +416,14 @@ fn timeout_fail_closed() {
     let config = make_config();
     let headers = HashMap::new();
 
-    let decision = send_auth_request(&agent, &config, &auth_url, "/test", &headers);
+    let decision = send_auth_request(
+        &agent,
+        &config,
+        &RequestParams::from_config(&config),
+        &auth_url,
+        "/test",
+        &headers,
+    );
     assert!(!decision.allowed);
     assert!(decision.error.is_some());
 }
@@ -389,7 +452,14 @@ fn extracts_response_headers() {
     config.extract_headers = vec!["x-auth-user".into(), "x-auth-roles".into()];
 
     let headers = HashMap::new();
-    let decision = send_auth_request(&agent, &config, &auth_url, "/test", &headers);
+    let decision = send_auth_request(
+        &agent,
+        &config,
+        &RequestParams::from_config(&config),
+        &auth_url,
+        "/test",
+        &headers,
+    );
     assert!(decision.allowed);
     assert_eq!(decision.extracted_headers.len(), 2);
     assert_eq!(
@@ -421,7 +491,14 @@ fn missing_extract_header_silently_skipped() {
     config.extract_headers = vec!["x-auth-user".into()];
 
     let headers = HashMap::new();
-    let decision = send_auth_request(&agent, &config, &auth_url, "/test", &headers);
+    let decision = send_auth_request(
+        &agent,
+        &config,
+        &RequestParams::from_config(&config),
+        &auth_url,
+        "/test",
+        &headers,
+    );
     assert!(decision.allowed);
     assert!(decision.extracted_headers.is_empty());
 
@@ -453,13 +530,145 @@ fn redirect_302_denied_with_location() {
     let config = make_config();
     let headers = HashMap::new();
 
-    let decision = send_auth_request(&agent, &config, &auth_url, "/test", &headers);
+    let decision = send_auth_request(
+        &agent,
+        &config,
+        &RequestParams::from_config(&config),
+        &auth_url,
+        "/test",
+        &headers,
+    );
     assert!(!decision.allowed);
     assert_eq!(decision.status_code, 302);
     assert_eq!(
         decision.redirect_url.as_deref(),
         Some("https://login.example.com/oauth2/start")
     );
+
+    handle.join().unwrap();
+}
+
+// Per-request overrides — these exercise the new RequestParams shape
+// independently of the SPOE-message parsing in plugin.rs. The chart
+// uses the overrides to wire the auth-method / auth-headers-request /
+// auth-response-headers annotations on a per-ingress basis.
+
+#[test]
+fn per_request_method_override_uses_head_when_config_says_get() {
+    use std::sync::{Arc, Mutex};
+    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let addr = server.server_addr().to_ip().unwrap();
+    let auth_url = format!("http://{addr}");
+
+    let observed = Arc::new(Mutex::new(String::new()));
+    let observed_thread = Arc::clone(&observed);
+    let handle = std::thread::spawn(move || {
+        let req = server.recv().unwrap();
+        *observed_thread.lock().unwrap() = req.method().to_string();
+        let response = tiny_http::Response::from_string("").with_status_code(204);
+        req.respond(response).unwrap();
+    });
+
+    let agent = make_agent();
+    let config = make_config(); // method: GET
+    let headers = HashMap::new();
+
+    let params = RequestParams {
+        method: "HEAD",
+        forward_headers: &config.forward_headers,
+        extract_headers: &config.extract_headers,
+    };
+    let decision = send_auth_request(&agent, &config, &params, &auth_url, "/test", &headers);
+    assert!(decision.allowed);
+
+    handle.join().unwrap();
+    assert_eq!(*observed.lock().unwrap(), "HEAD");
+}
+
+#[test]
+fn per_request_forward_headers_override_filters_to_subset() {
+    use std::sync::{Arc, Mutex};
+    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let addr = server.server_addr().to_ip().unwrap();
+    let auth_url = format!("http://{addr}");
+
+    let received_auth = Arc::new(Mutex::new(None::<String>));
+    let received_cookie = Arc::new(Mutex::new(None::<String>));
+    let auth_t = Arc::clone(&received_auth);
+    let cookie_t = Arc::clone(&received_cookie);
+    let handle = std::thread::spawn(move || {
+        let req = server.recv().unwrap();
+        for h in req.headers() {
+            let name = h.field.as_str().as_str().to_lowercase();
+            if name == "authorization" {
+                *auth_t.lock().unwrap() = Some(h.value.as_str().to_string());
+            } else if name == "cookie" {
+                *cookie_t.lock().unwrap() = Some(h.value.as_str().to_string());
+            }
+        }
+        let response = tiny_http::Response::from_string("").with_status_code(204);
+        req.respond(response).unwrap();
+    });
+
+    let agent = make_agent();
+    let config = make_config();
+    let mut headers = HashMap::new();
+    headers.insert("authorization".to_string(), "Bearer abc".to_string());
+    headers.insert("cookie".to_string(), "session=xyz".to_string());
+
+    // Override forwards to authorization only — cookie must NOT be sent
+    // even though config.forward_headers includes it.
+    let forward = vec!["authorization".to_string()];
+    let params = RequestParams {
+        method: &config.method,
+        forward_headers: &forward,
+        extract_headers: &config.extract_headers,
+    };
+    let decision = send_auth_request(&agent, &config, &params, &auth_url, "/test", &headers);
+    assert!(decision.allowed);
+
+    handle.join().unwrap();
+    assert_eq!(received_auth.lock().unwrap().as_deref(), Some("Bearer abc"));
+    assert_eq!(*received_cookie.lock().unwrap(), None);
+}
+
+#[test]
+fn per_request_extract_headers_override_picks_per_request_set() {
+    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let addr = server.server_addr().to_ip().unwrap();
+    let auth_url = format!("http://{addr}");
+
+    let handle = std::thread::spawn(move || {
+        let req = server.recv().unwrap();
+        let response = tiny_http::Response::from_string("")
+            .with_status_code(200)
+            .with_header(tiny_http::Header::from_bytes("X-Auth-User", "alice").unwrap())
+            .with_header(tiny_http::Header::from_bytes("X-Auth-Roles", "admin").unwrap())
+            .with_header(tiny_http::Header::from_bytes("X-Auth-Email", "a@e.com").unwrap());
+        req.respond(response).unwrap();
+    });
+
+    let agent = make_agent();
+    let config = make_config(); // extract_headers empty
+    let headers = HashMap::new();
+
+    let extract = vec!["x-auth-user".to_string(), "x-auth-email".to_string()];
+    let params = RequestParams {
+        method: &config.method,
+        forward_headers: &config.forward_headers,
+        extract_headers: &extract,
+    };
+    let decision = send_auth_request(&agent, &config, &params, &auth_url, "/test", &headers);
+    assert!(decision.allowed);
+
+    let names: Vec<&str> = decision
+        .extracted_headers
+        .iter()
+        .map(|(k, _)| k.as_str())
+        .collect();
+    assert!(names.contains(&"x-auth-user"));
+    assert!(names.contains(&"x-auth-email"));
+    assert!(!names.contains(&"x-auth-roles"));
 
     handle.join().unwrap();
 }

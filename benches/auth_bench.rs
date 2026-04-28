@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use external_auth_plugin::auth::{AuthDecision, send_auth_request};
+use external_auth_plugin::auth::{AuthDecision, RequestParams, send_auth_request};
 use external_auth_plugin::config::PluginConfig;
 
 fn make_config() -> PluginConfig {
@@ -92,7 +92,14 @@ fn bench_send_auth_request(c: &mut Criterion) {
 
     c.bench_function("send_auth_request_200_localhost", |b| {
         b.iter(|| {
-            let decision = send_auth_request(&agent, &config, &auth_url, "/bench", &headers);
+            let decision = send_auth_request(
+                &agent,
+                &config,
+                &RequestParams::from_config(&config),
+                &auth_url,
+                "/bench",
+                &headers,
+            );
             assert!(decision.allowed);
         });
     });

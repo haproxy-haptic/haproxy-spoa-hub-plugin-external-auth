@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Per-request overrides for `method`, `forward_headers`, and
+  `extract_headers` via SPOE message arguments. The plugin reads the
+  `method`, `forward_headers`, and `extract_headers` args from each
+  message and falls back to plugin-level config when an arg is absent
+  or empty. This lets the HAPTIC chart wire the
+  `nginx.ingress.kubernetes.io/auth-method`,
+  `nginx.ingress.kubernetes.io/auth-response-headers`,
+  `haproxy-ingress.github.io/auth-headers-pass`, and equivalent
+  per-ingress annotations without redeploying the sidecar. Old
+  senders that don't include these args see no behaviour change.
+- `RequestParams::from_config(&config)` helper that borrows all three
+  fields from the plugin-level config. Used by tests and by the
+  plugin's "no override" fast path.
+
+### Changed
+
+- Public `send_auth_request` signature now takes a `&RequestParams`
+  parameter between `&PluginConfig` and `auth_url`. Anyone using this
+  crate as a Rust library (rather than via the plugin ABI) needs to
+  update call sites — see the new `RequestParams::from_config` helper
+  for the no-override case. The SPOE protocol contract is unchanged
+  for old senders.
+
 ## [0.1.1] - 2026-04-28
 
 ### Added

@@ -9,6 +9,24 @@ const DEFAULT_FORWARD_HEADERS: &[&str] = &[
     "x-forwarded-uri",
 ];
 
+/// HTTP methods the plugin will dispatch to the auth service. Used by
+/// both the plugin-level config validation and the per-request override
+/// path (`method` SPOE arg). Restricted to body-less methods because
+/// the plugin doesn't currently forward request bodies — POST/PUT/PATCH
+/// would silently send an empty body, which is rarely what an auth
+/// service expects. Adding body forwarding is a separate enhancement.
+const ALLOWED_METHODS: &[&str] = &["GET", "HEAD"];
+
+/// Validate an HTTP method string. The input must already be uppercased;
+/// `PluginConfig::from_context` and `plugin::process` both upper-case
+/// before calling.
+pub fn validate_method(method: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if !ALLOWED_METHODS.contains(&method) {
+        return Err(format!("method must be one of {ALLOWED_METHODS:?}, got: {method}").into());
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct PluginConfig {
     pub forward_headers: Vec<String>,
@@ -86,9 +104,7 @@ impl PluginConfig {
         if self.timeout_ms == 0 {
             return Err("timeout_ms must be greater than 0".into());
         }
-        if self.method != "GET" && self.method != "HEAD" {
-            return Err(format!("method must be GET or HEAD, got: {}", self.method).into());
-        }
+        validate_method(&self.method)?;
         Ok(())
     }
 
@@ -137,7 +153,7 @@ impl PluginConfig {
                 "method": {
                     "type": "string",
                     "enum": ["GET", "HEAD"],
-                    "description": "HTTP method for auth subrequest"
+                    "description": "Default HTTP method for auth subrequest. Per-request overrides land via the `method` SPOE message arg (auth-method annotation in the chart). Restricted to body-less methods; body forwarding is not implemented."
                 }
             },
             "additionalProperties": false
