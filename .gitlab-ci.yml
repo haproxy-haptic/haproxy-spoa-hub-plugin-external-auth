@@ -21,6 +21,10 @@ variables:
   CARGO_AUDITABLE_VERSION: "0.7.4"
   # renovate: datasource=github-releases depName=sigstore/cosign extractVersion=^v(?<version>.*)$
   COSIGN_VERSION: "2.4.1"
+  # SHA256 of cosign-linux-amd64 for COSIGN_VERSION. Pinned in-repo so a
+  # compromised upstream release cannot supply a matching checksums file.
+  # Renovate must keep this in sync with COSIGN_VERSION on bump.
+  COSIGN_SHA256: "8b24b946dd5809c6bd93de08033bcf6bc0ed7d336b7785787c080f574b89249b"
   CARGO_INCREMENTAL: "0"
   GLIBC_VERSION: "2.36"
   LIB_NAME: "libexternal_auth_plugin"
@@ -214,20 +218,18 @@ build:
 # =============================================================================
 
 # Reusable cosign install snippet. Pinned to COSIGN_VERSION (renovate-managed)
-# and SHA256-verified against the upstream `cosign_checksums.txt` so a
-# compromised GitHub release or CDN cannot inject a malicious signer into
-# the very pipeline meant to harden supply chain.
+# and verified against COSIGN_SHA256 pinned in this repo, so a compromised
+# upstream release cannot supply a matching checksums file alongside a
+# malicious binary.
 .install-cosign:
   before_script:
     - apk add --no-cache curl
     - |
-      base="https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}"
-      curl -sSL --fail -o /usr/local/bin/cosign "${base}/cosign-linux-amd64"
-      curl -sSL --fail -o /tmp/cosign_checksums.txt "${base}/cosign_checksums.txt"
-      expected=$(awk '$2 == "cosign-linux-amd64" {print $1}' /tmp/cosign_checksums.txt)
+      curl -sSL --fail -o /usr/local/bin/cosign \
+        "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64"
       actual=$(sha256sum /usr/local/bin/cosign | awk '{print $1}')
-      if [ "${expected}" != "${actual}" ]; then
-        echo "cosign checksum mismatch: expected ${expected}, got ${actual}" >&2
+      if [ "${COSIGN_SHA256}" != "${actual}" ]; then
+        echo "cosign checksum mismatch: expected ${COSIGN_SHA256}, got ${actual}" >&2
         exit 1
       fi
       chmod +x /usr/local/bin/cosign
@@ -276,14 +278,17 @@ upload-artifacts:
   before_script:
     - apk add --no-cache curl bash coreutils
   script:
-    # Combined SHA256SUMS bundle (one line per artifact, friendly to
-    # `sha256sum -c SHA256SUMS`). Excludes sidecars and any prior bundle.
-    - cd artifacts
-    - >-
-      sha256sum
-      $(ls -1 | grep -vE '\.(sha256|cosign\.bundle)$|^SHA256SUMS$')
-      > SHA256SUMS
-    - cd ..
+    - |
+      cd artifacts
+      : > SHA256SUMS
+      for f in *; do
+        [ -f "$f" ] || continue
+        case "$f" in
+          *.sha256 | *.cosign.bundle | SHA256SUMS) continue ;;
+        esac
+        sha256sum "$f" >> SHA256SUMS
+      done
+      cd ..
     - scripts/upload-release-artifacts.sh
 
 # =============================================================================
