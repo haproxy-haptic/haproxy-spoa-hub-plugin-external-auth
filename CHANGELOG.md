@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Per-request mTLS to the auth service via two new SPOE message args,
+  `client_cert` and `client_key` (both PEM-encoded). When both are
+  present, the plugin builds (and caches per cert+key pair) a ureq
+  Agent that presents the client certificate. Drives the
+  `haproxy-ingress.github.io/auth-tls-cert-secret` annotation on the
+  chart side. The cache is bounded with FIFO eviction so cert
+  rotation does not leak entries over time; capacity is configurable
+  via the new `mtls_cache_capacity` plugin config option (default 64,
+  set to 0 to disable caching). Old senders that don't include these
+  args see no behaviour change.
+- HTTP method dispatch covering `POST`, `PUT`, `PATCH`, `DELETE`, and
+  `OPTIONS` in addition to `GET` / `HEAD`. Body-having methods
+  (POST/PUT/PATCH) go out with an empty body — the plugin does not
+  forward the original request payload. Auth services that need the
+  body should read it via sample-fetch args. `OPTIONS` is sent as a
+  GET (ureq 3.x has no typed OPTIONS builder); drop it from the
+  allowlist if this becomes a real issue.
+- Response-header extraction now runs on every response path, not just
+  on 2xx. Auth services can return `WWW-Authenticate` on 401 or
+  `X-Error-Reason` on 5xx and have those flow through to HAProxy as
+  transaction variables. Drives the
+  `haproxy-ingress.github.io/auth-headers-fail` annotation on the
+  chart side.
+
+## [0.2.0] - 2026-04-28
+
+### Added
+
 - Per-request overrides for `method`, `forward_headers`, and
   `extract_headers` via SPOE message arguments. The plugin reads the
   `method`, `forward_headers`, and `extract_headers` args from each

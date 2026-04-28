@@ -29,6 +29,7 @@ fn make_config() -> PluginConfig {
         fail_open: false,
         method: "GET".into(),
         allow_plaintext: true,
+        mtls_cache_capacity: 64,
     }
 }
 
@@ -669,6 +670,164 @@ fn per_request_extract_headers_override_picks_per_request_set() {
     assert!(names.contains(&"x-auth-user"));
     assert!(names.contains(&"x-auth-email"));
     assert!(!names.contains(&"x-auth-roles"));
+
+    handle.join().unwrap();
+}
+
+#[test]
+fn post_method_dispatches_with_empty_body() {
+    use std::sync::{Arc, Mutex};
+    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let addr = server.server_addr().to_ip().unwrap();
+    let auth_url = format!("http://{addr}");
+
+    let observed_method = Arc::new(Mutex::new(String::new()));
+    let observed_body = Arc::new(Mutex::new(String::new()));
+    let m_t = Arc::clone(&observed_method);
+    let b_t = Arc::clone(&observed_body);
+    let handle = std::thread::spawn(move || {
+        let mut req = server.recv().unwrap();
+        *m_t.lock().unwrap() = req.method().to_string();
+        let mut body = String::new();
+        req.as_reader().read_to_string(&mut body).unwrap();
+        *b_t.lock().unwrap() = body;
+        req.respond(tiny_http::Response::from_string("").with_status_code(200))
+            .unwrap();
+    });
+
+    let agent = make_agent();
+    let config = make_config();
+    let headers = HashMap::new();
+
+    let params = RequestParams {
+        method: "POST",
+        forward_headers: &config.forward_headers,
+        extract_headers: &config.extract_headers,
+    };
+    let decision = send_auth_request(&agent, &config, &params, &auth_url, "/test", &headers);
+    assert!(decision.allowed);
+
+    handle.join().unwrap();
+    assert_eq!(*observed_method.lock().unwrap(), "POST");
+    // Empty body — the plugin doesn't forward the original payload.
+    assert_eq!(*observed_body.lock().unwrap(), "");
+}
+
+#[test]
+fn options_method_goes_out_as_options() {
+    use std::sync::{Arc, Mutex};
+    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let addr = server.server_addr().to_ip().unwrap();
+    let auth_url = format!("http://{addr}");
+
+    let observed_method = Arc::new(Mutex::new(String::new()));
+    let m_t = Arc::clone(&observed_method);
+    let handle = std::thread::spawn(move || {
+        let req = server.recv().unwrap();
+        *m_t.lock().unwrap() = req.method().to_string();
+        req.respond(tiny_http::Response::from_string("").with_status_code(200))
+            .unwrap();
+    });
+
+    let agent = make_agent();
+    let config = make_config();
+    let headers = HashMap::new();
+
+    let params = RequestParams {
+        method: "OPTIONS",
+        forward_headers: &config.forward_headers,
+        extract_headers: &config.extract_headers,
+    };
+    let decision = send_auth_request(&agent, &config, &params, &auth_url, "/test", &headers);
+    assert!(decision.allowed);
+
+    handle.join().unwrap();
+    assert_eq!(
+        *observed_method.lock().unwrap(),
+        "OPTIONS",
+        "OPTIONS must dispatch as OPTIONS, not GET"
+    );
+}
+
+#[test]
+fn extract_headers_on_401_for_auth_headers_fail_support() {
+    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let addr = server.server_addr().to_ip().unwrap();
+    let auth_url = format!("http://{addr}");
+
+    let handle = std::thread::spawn(move || {
+        let req = server.recv().unwrap();
+        let response = tiny_http::Response::from_string("")
+            .with_status_code(401)
+            .with_header(
+                tiny_http::Header::from_bytes("WWW-Authenticate", "Bearer realm=\"api\"").unwrap(),
+            )
+            .with_header(tiny_http::Header::from_bytes("X-Error-Reason", "token-expired").unwrap());
+        req.respond(response).unwrap();
+    });
+
+    let agent = make_agent();
+    let config = make_config();
+    let headers = HashMap::new();
+
+    let extract = vec!["www-authenticate".to_string(), "x-error-reason".to_string()];
+    let params = RequestParams {
+        method: &config.method,
+        forward_headers: &config.forward_headers,
+        extract_headers: &extract,
+    };
+    let decision = send_auth_request(&agent, &config, &params, &auth_url, "/test", &headers);
+    assert!(!decision.allowed);
+    assert_eq!(decision.status_code, 401);
+
+    let names: Vec<&str> = decision
+        .extracted_headers
+        .iter()
+        .map(|(k, _)| k.as_str())
+        .collect();
+    assert!(names.contains(&"www-authenticate"));
+    assert!(names.contains(&"x-error-reason"));
+
+    handle.join().unwrap();
+}
+
+#[test]
+fn extract_headers_on_5xx_failure_path() {
+    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let addr = server.server_addr().to_ip().unwrap();
+    let auth_url = format!("http://{addr}");
+
+    let handle = std::thread::spawn(move || {
+        let req = server.recv().unwrap();
+        let response = tiny_http::Response::from_string("")
+            .with_status_code(503)
+            .with_header(tiny_http::Header::from_bytes("X-Error-Reason", "auth-svc-down").unwrap());
+        req.respond(response).unwrap();
+    });
+
+    let agent = make_agent();
+    let mut config = make_config();
+    config.fail_open = true; // so 503 doesn't propagate as denial; we want to inspect headers
+    let headers = HashMap::new();
+
+    let extract = vec!["x-error-reason".to_string()];
+    let params = RequestParams {
+        method: &config.method,
+        forward_headers: &config.forward_headers,
+        extract_headers: &extract,
+    };
+    let decision = send_auth_request(&agent, &config, &params, &auth_url, "/test", &headers);
+    // fail_open=true → 5xx allows the request, but headers from auth-svc still flow through.
+    assert!(decision.allowed);
+    assert_eq!(decision.status_code, 503);
+    assert_eq!(
+        decision
+            .extracted_headers
+            .iter()
+            .find(|(k, _)| k == "x-error-reason")
+            .map(|(_, v)| v.as_str()),
+        Some("auth-svc-down"),
+    );
 
     handle.join().unwrap();
 }

@@ -90,24 +90,27 @@ pub fn send_auth_request(
     let url = format!("{auth_url}{path}");
 
     // Method strings reach us already upper-cased and validated against
-    // the allowed list in config.rs (currently GET / HEAD only).
-    let mut request = match params.method {
-        "HEAD" => agent.head(&url),
-        _ => agent.get(&url),
+    // the allowed list in config.rs. Body-less and body-having methods
+    // need different ureq builders; for body-having methods we send an
+    // empty body since the plugin doesn't forward the original payload.
+    // The match on params.method covers each, with .call() / .send(())
+    // returning a uniform Result<Response, Error>.
+    // Body-having methods (POST/PUT/PATCH) go out with an empty body —
+    // the plugin does not forward the original request payload. ureq's
+    // WithBody builder requires .send(...), so we pass an empty slice;
+    // the WithoutBody builder uses .call(). Each arm applies forward
+    // headers via apply_headers_* before calling.
+    let response_result = match params.method {
+        "HEAD" => apply_headers_no_body(agent.head(&url), params, headers).call(),
+        "DELETE" => apply_headers_no_body(agent.delete(&url), params, headers).call(),
+        "OPTIONS" => apply_headers_no_body(agent.options(&url), params, headers).call(),
+        "POST" => apply_headers_with_body(agent.post(&url), params, headers).send(&[][..]),
+        "PUT" => apply_headers_with_body(agent.put(&url), params, headers).send(&[][..]),
+        "PATCH" => apply_headers_with_body(agent.patch(&url), params, headers).send(&[][..]),
+        _ => apply_headers_no_body(agent.get(&url), params, headers).call(),
     };
 
-    // Forward configured headers. Keys from extract_message_args are already
-    // lowercase (stripped hdr_ prefix), matching forward_headers entries.
-    for (name, value) in headers {
-        if params.forward_headers.iter().any(|h| h == name) {
-            let header_name = name.replace('_', "-");
-            request = request.header(&header_name, value);
-        }
-    }
-
-    // Agent is configured with http_status_as_error(false) and max_redirects(0),
-    // so all responses come through Ok() and we handle status codes ourselves.
-    match request.call() {
+    match response_result {
         Ok(response) => classify_response(config, params, response),
         Err(ureq::Error::Timeout(timeout)) => {
             let msg = format!("auth subrequest timed out: {timeout}");
@@ -122,6 +125,36 @@ pub fn send_auth_request(
     }
 }
 
+/// Apply forward-headers to a ureq WithoutBody builder (GET/HEAD/DELETE).
+fn apply_headers_no_body(
+    mut request: ureq::RequestBuilder<ureq::typestate::WithoutBody>,
+    params: &RequestParams<'_>,
+    headers: &HashMap<String, String>,
+) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
+    for (name, value) in headers {
+        if params.forward_headers.iter().any(|h| h == name) {
+            let header_name = name.replace('_', "-");
+            request = request.header(&header_name, value);
+        }
+    }
+    request
+}
+
+/// Apply forward-headers to a ureq WithBody builder (POST/PUT/PATCH).
+fn apply_headers_with_body(
+    mut request: ureq::RequestBuilder<ureq::typestate::WithBody>,
+    params: &RequestParams<'_>,
+    headers: &HashMap<String, String>,
+) -> ureq::RequestBuilder<ureq::typestate::WithBody> {
+    for (name, value) in headers {
+        if params.forward_headers.iter().any(|h| h == name) {
+            let header_name = name.replace('_', "-");
+            request = request.header(&header_name, value);
+        }
+    }
+    request
+}
+
 fn classify_response(
     config: &PluginConfig,
     params: &RequestParams<'_>,
@@ -130,17 +163,17 @@ fn classify_response(
     let status = response.status().as_u16() as u32;
     let headers = response.headers();
 
+    // Extract configured response headers regardless of outcome. Auth
+    // services frequently return:
+    //   - X-Auth-User / X-Auth-Roles on 2xx (forward to upstream)
+    //   - WWW-Authenticate on 401 (forward to client to drive challenge)
+    //   - X-Error-Reason on 4xx/5xx (forward to client for diagnostics)
+    // The chart side decides which decisions get which headers; the
+    // plugin's job is just to surface them. Old senders that don't set
+    // extract_headers see this as a no-op (extracted is always empty).
+    let extracted = extract_headers(params.extract_headers, headers);
+
     if (200..300).contains(&status) {
-        // 2xx — allowed, extract per-request response headers
-        let mut extracted = Vec::new();
-        for header_name in params.extract_headers {
-            let header_key = header_name.replace('_', "-");
-            if let Some(value) = headers.get(header_key.as_str()) {
-                if let Ok(val_str) = value.to_str() {
-                    extracted.push((header_name.clone(), val_str.to_string()));
-                }
-            }
-        }
         AuthDecision {
             allowed: true,
             status_code: status,
@@ -158,24 +191,40 @@ fn classify_response(
             allowed: false,
             status_code: status,
             redirect_url: location,
-            extracted_headers: vec![],
+            extracted_headers: extracted,
             error: None,
         }
     } else if status == 401 || status == 403 {
-        // Auth denial
         AuthDecision {
             allowed: false,
             status_code: status,
             redirect_url: None,
-            extracted_headers: vec![],
+            extracted_headers: extracted,
             error: None,
         }
     } else {
-        // 5xx or other — apply failure policy
+        // 5xx or other — apply failure policy. Headers extracted above
+        // still flow through so operators can wire e.g. X-Error-Reason
+        // even on the failure-policy path.
         let msg = format!("auth service returned {status}");
         log_failure(config, &msg);
-        apply_failure_policy(config, status, &msg)
+        let mut decision = apply_failure_policy(config, status, &msg);
+        decision.extracted_headers = extracted;
+        decision
     }
+}
+
+fn extract_headers(names: &[String], response_headers: &http::HeaderMap) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for header_name in names {
+        let header_key = header_name.replace('_', "-");
+        if let Some(value) = response_headers.get(header_key.as_str()) {
+            if let Ok(val_str) = value.to_str() {
+                out.push((header_name.clone(), val_str.to_string()));
+            }
+        }
+    }
+    out
 }
 
 fn apply_failure_policy(config: &PluginConfig, status_code: u32, error_msg: &str) -> AuthDecision {
