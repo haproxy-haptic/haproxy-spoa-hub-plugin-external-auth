@@ -11,11 +11,14 @@ const DEFAULT_FORWARD_HEADERS: &[&str] = &[
 
 /// HTTP methods the plugin will dispatch to the auth service. Used by
 /// both the plugin-level config validation and the per-request override
-/// path (`method` SPOE arg). Restricted to body-less methods because
-/// the plugin doesn't currently forward request bodies — POST/PUT/PATCH
-/// would silently send an empty body, which is rarely what an auth
-/// service expects. Adding body forwarding is a separate enhancement.
-const ALLOWED_METHODS: &[&str] = &["GET", "HEAD"];
+/// path (`method` SPOE arg). The plugin doesn't forward the original
+/// request body — POST/PUT/PATCH go out with an empty body, matching
+/// nginx-ingress's `auth_request` behaviour where the auth-url is
+/// always fetched independently of the original method's payload.
+/// Auth services that need the body should read it from sample-fetch
+/// args instead (e.g., `body=req.body` in the spoe-message), or use
+/// header-based auth (e.g., bearer tokens).
+const ALLOWED_METHODS: &[&str] = &["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
 
 /// Validate an HTTP method string. The input must already be uppercased;
 /// `PluginConfig::from_context` and `plugin::process` both upper-case
@@ -27,6 +30,13 @@ pub fn validate_method(method: &str) -> Result<(), Box<dyn std::error::Error + S
     Ok(())
 }
 
+/// Default cap for the mTLS Agent cache. Each entry is a ureq Agent
+/// holding a rustls ClientConfig — a few KB. 64 covers realistic
+/// per-pod cert variety with headroom; operators with larger
+/// fleets (many tenants × distinct cert-using auth services) can
+/// override via `mtls_cache_capacity` in the plugin config.
+pub const DEFAULT_MTLS_CACHE_CAPACITY: usize = 64;
+
 #[derive(Debug, Clone)]
 pub struct PluginConfig {
     pub forward_headers: Vec<String>,
@@ -35,6 +45,11 @@ pub struct PluginConfig {
     pub fail_open: bool,
     pub method: String,
     pub allow_plaintext: bool,
+    /// Maximum number of distinct (cert, key) pairs to keep cached
+    /// (FIFO eviction past this). 0 disables caching entirely (an
+    /// Agent is built fresh for every mTLS request — useful for
+    /// tests, expensive in production).
+    pub mtls_cache_capacity: usize,
 }
 
 impl PluginConfig {
@@ -88,6 +103,12 @@ impl PluginConfig {
             })
             .unwrap_or_default();
 
+        let mtls_cache_capacity = context
+            .get_config("mtls_cache_capacity")
+            .and_then(|v| v.as_integer())
+            .map(|n| n.max(0) as usize)
+            .unwrap_or(DEFAULT_MTLS_CACHE_CAPACITY);
+
         let config = PluginConfig {
             forward_headers,
             extract_headers,
@@ -95,6 +116,7 @@ impl PluginConfig {
             fail_open,
             method,
             allow_plaintext,
+            mtls_cache_capacity,
         };
         config.validate()?;
         Ok(config)
@@ -152,8 +174,13 @@ impl PluginConfig {
                 },
                 "method": {
                     "type": "string",
-                    "enum": ["GET", "HEAD"],
-                    "description": "Default HTTP method for auth subrequest. Per-request overrides land via the `method` SPOE message arg (auth-method annotation in the chart). Restricted to body-less methods; body forwarding is not implemented."
+                    "enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+                    "description": "Default HTTP method for auth subrequest. Per-request overrides land via the `method` SPOE message arg (auth-method annotation in the chart). Body-having methods (POST/PUT/PATCH) go out with an empty body — the plugin does not forward the original request body."
+                },
+                "mtls_cache_capacity": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Maximum number of distinct (cert, key) pairs to keep cached for mTLS auth requests. FIFO eviction past this. Each entry is ~few KB. Default 64. 0 disables caching (an Agent is built fresh per mTLS request — useful for tests, expensive in production)."
                 }
             },
             "additionalProperties": false

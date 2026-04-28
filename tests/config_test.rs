@@ -15,6 +15,7 @@ fn make_config() -> PluginConfig {
         fail_open: false,
         method: "GET".into(),
         allow_plaintext: false,
+        mtls_cache_capacity: 64,
     }
 }
 
