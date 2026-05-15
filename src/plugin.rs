@@ -5,7 +5,7 @@ use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
 
 use haproxy_spoa_hub_plugin_api::{
-    ProcessingResult, SpoeMessage, SpoeValue, Tuple2, define_plugin,
+    MetricRecorder, ProcessingResult, SpoeMessage, SpoeValue, Tuple2, define_plugin,
 };
 
 use crate::auth::{self, RequestParams};
@@ -13,6 +13,11 @@ use crate::config::{PluginConfig, validate_method};
 
 static CONFIG: OnceLock<PluginConfig> = OnceLock::new();
 static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+
+/// Plugin-scoped metric recorder. The `define_plugin!` `metrics_static`
+/// arm below binds the hub's v2 recorder here; with a v0.5.x hub the
+/// install never fires and emissions are silent no-ops.
+static METRICS: MetricRecorder = MetricRecorder::new();
 
 /// Bounded FIFO cache of mTLS-configured ureq Agents. ureq's TLS config
 /// is fixed at Agent construction (it owns the rustls ClientConfig),
@@ -162,6 +167,7 @@ define_plugin!(ExternalAuthPlugin, {
             extracted.client_key.as_deref(),
         )?;
 
+        let started = std::time::Instant::now();
         let decision = auth::send_auth_request(
             &resolved_agent,
             config,
@@ -170,6 +176,7 @@ define_plugin!(ExternalAuthPlugin, {
             &extracted.path,
             &extracted.headers,
         );
+        let elapsed = started.elapsed();
 
         log::info!(
             "external-auth: path={} auth_url={} method={} allowed={} status={}",
@@ -180,6 +187,33 @@ define_plugin!(ExternalAuthPlugin, {
             decision.status_code,
         );
 
+        // Hub prefixes everything with `plugin_external-auth_`.
+        // Outcome captures the boolean decision; status_class buckets
+        // the auth backend's HTTP status. Together they answer
+        // "is auth working? are denials coming from real 4xx/5xx,
+        // an error, or a transient network failure?" in a single
+        // counter per outcome.
+        let outcome = if decision.allowed {
+            "allowed"
+        } else {
+            "denied"
+        };
+        let status_class = match decision.status_code {
+            0 => "none",
+            100..=199 => "1xx",
+            200..=299 => "2xx",
+            300..=399 => "3xx",
+            400..=499 => "4xx",
+            500..=599 => "5xx",
+            _ => "other",
+        };
+        METRICS.counter(
+            "auth_requests_total",
+            &[("outcome", outcome), ("status_class", status_class)],
+            1,
+        );
+        METRICS.histogram("auth_duration_seconds", &[], elapsed.as_secs_f64());
+
         Ok(ProcessingResult {
             variables: decision.to_variables(),
         })
@@ -188,6 +222,8 @@ define_plugin!(ExternalAuthPlugin, {
     fn config_schema(&self) -> Option<&str> {
         Some(PluginConfig::config_schema())
     }
+
+    metrics_static = METRICS;
 });
 
 /// Parsed SPOE message contents. Per-request overrides
