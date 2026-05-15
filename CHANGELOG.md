@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-05-15
+
+### Added
+
+- **Prometheus metrics** via the `haproxy-spoa-hub` v0.6.0 plugin-API v2 vtable. Counters and histograms surface through the hub's `/metrics` endpoint under the `plugin_external-auth_` prefix.
+
+  | metric                  | kind      | labels                       |
+  |-------------------------|-----------|------------------------------|
+  | `auth_requests_total`   | counter   | `outcome`, `status_class`    |
+  | `auth_duration_seconds` | histogram | _(no labels)_                |
+
+  `outcome` ∈ `{allowed, denied}` from the plugin's per-request boolean decision; `status_class` is the auth-backend HTTP status bucketed to its hundreds digit (`2xx`, `4xx`, `5xx`, …) with `none` when no response was received.
+
+### Changed
+
+- Plugin-API dep `^0.5` → `^0.6` to pick up `MetricRecorder` and the `metrics_static` macro arm. Vtable change is append-only — this plugin's v0.5.0 .so still loads on v0.5.x hubs (metrics become silent no-ops).
+
 ## [0.4.0] - 2026-05-04
 
 ### Changed

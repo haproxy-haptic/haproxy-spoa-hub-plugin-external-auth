@@ -1,6 +1,6 @@
 [package]
 name = "external-auth-plugin"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.86"
 description = "External auth subrequest plugin for haproxy-spoa-hub"
@@ -10,9 +10,11 @@ license = "Apache-2.0"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# Requires plugin-api 0.5.0+ (the hand-rolled #[repr(C)] vtable
-# migration). This plugin will not load on hubs older than v0.5.0.
-haproxy-spoa-hub-plugin-api = "0.5"
+# Requires plugin-api 0.6.0+ for the v2 vtable's set_metric_recorder.
+# Plugin still loads on v0.5.x hubs — the v2 field is appended after
+# v1 and old hubs read only what they know, making the metric-recorder
+# install a no-op there.
+haproxy-spoa-hub-plugin-api = "0.6"
 ureq = "3"
 http = "1"
 log = "0.4"
