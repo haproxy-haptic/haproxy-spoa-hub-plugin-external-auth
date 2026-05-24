@@ -14,7 +14,7 @@ crate-type = ["cdylib", "rlib"]
 # Plugin still loads on v0.5.x hubs — the v2 field is appended after
 # v1 and old hubs read only what they know, making the metric-recorder
 # install a no-op there.
-haproxy-spoa-hub-plugin-api = "0.6"
+haproxy-spoa-hub-plugin-api = "0.7"
 ureq = "3"
 http = "1"
 log = "0.4"
