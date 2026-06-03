@@ -123,8 +123,20 @@ docker build \
     -f "$SCRIPT_DIR/Dockerfile.hub" \
     "$REPO_DIR"
 
-echo "=== Loading image into kind ==="
-kind load docker-image e2e-hub:latest --name "$CLUSTER_NAME"
+echo "=== Loading images into kind ==="
+# Side-load every image the manifests reference (besides the locally-built
+# e2e-hub) so pod startup never waits on a live registry pull. A slow or
+# rate-limited ghcr.io/quay.io/docker.io pull would otherwise stall pod
+# readiness past the wait timeout (observed once on mock-oidc). Images are
+# discovered from the manifests so this stays correct when a tag is bumped.
+mapfile -t DEP_IMAGES < <(
+    awk '/^[[:space:]]*image:[[:space:]]/ {print $2}' "$SCRIPT_DIR"/manifests/*.yaml |
+        grep -vxF 'e2e-hub:latest' | sort -u
+)
+for img in "${DEP_IMAGES[@]}"; do
+    docker pull "$img"
+done
+kind load docker-image e2e-hub:latest "${DEP_IMAGES[@]}" --name "$CLUSTER_NAME"
 
 # ============================================================================
 # Deploy manifests
@@ -145,10 +157,30 @@ kubectl apply -f "$SCRIPT_DIR/manifests/haproxy-hub.yaml"
 # Wait for pods
 # ============================================================================
 
+# Wait for a pod to become ready, dumping cluster diagnostics on timeout. The
+# cleanup trap tears the cluster down on exit, so any startup failure must be
+# captured here or it is lost (as happened on the silent mock-oidc timeout).
+wait_ready() {
+    local selector="$1"
+    if kubectl wait --for=condition=ready pod -l "$selector" -n "$NAMESPACE" --timeout=120s; then
+        return 0
+    fi
+    echo "FAIL: pods matching '$selector' did not become ready in time"
+    echo "--- pods ---"
+    kubectl get pods -o wide -n "$NAMESPACE" || true
+    echo "--- describe ---"
+    kubectl describe pods -n "$NAMESPACE" || true
+    echo "--- events ---"
+    kubectl get events -n "$NAMESPACE" --sort-by=.lastTimestamp || true
+    echo "--- logs ---"
+    kubectl logs -l "$selector" -n "$NAMESPACE" --all-containers --prefix --tail=100 || true
+    exit 1
+}
+
 echo "=== Waiting for pods ==="
-kubectl wait --for=condition=ready pod -l app=mock-oidc -n "$NAMESPACE" --timeout=120s
-kubectl wait --for=condition=ready pod -l app=oauth2-proxy -n "$NAMESPACE" --timeout=120s
-kubectl wait --for=condition=ready pod -l app=haproxy-hub -n "$NAMESPACE" --timeout=120s
+wait_ready app=mock-oidc
+wait_ready app=oauth2-proxy
+wait_ready app=haproxy-hub
 
 echo "=== Waiting for HAProxy to accept connections ==="
 for i in $(seq 1 30); do
