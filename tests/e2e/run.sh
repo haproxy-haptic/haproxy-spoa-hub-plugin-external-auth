@@ -45,7 +45,9 @@ assert_eq() {
 
 assert_contains() {
     local haystack="$1" needle="$2" msg="$3"
-    if echo "$haystack" | grep -qF "$needle"; then
+    # Match in-shell: with `| grep -q`, grep exits on first match, the
+    # producer takes SIGPIPE, and pipefail reports 141 -- a match read as a miss.
+    if [[ "$haystack" == *"$needle"* ]]; then
         echo "  PASS: $msg"
         PASSED=$((PASSED + 1))
     else
