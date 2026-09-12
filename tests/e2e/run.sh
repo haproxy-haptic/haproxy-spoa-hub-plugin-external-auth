@@ -229,7 +229,10 @@ assert_contains "$RESPONSE" "email=" "authenticated response contains email fiel
 
 echo ""
 echo "=== Test 3: Subsequent authenticated request with cookie ==="
-HTTP_CODE=$(curl -s -o "$TMPDIR/test3-body.txt" -b "$TMPDIR/cookies.txt" \
+# curl stores jar cookies for a dotless host such as dind's "docker" but never
+# replays them (curl 8.22), so present the session cookie explicitly.
+COOKIE_HEADER=$(awk -F'\t' 'NF == 7 { printf "%s%s=%s", sep, $6, $7; sep = "; " }' "$TMPDIR/cookies.txt")
+HTTP_CODE=$(curl -s -o "$TMPDIR/test3-body.txt" -H "Cookie: $COOKIE_HEADER" \
     -w '%{http_code}' --max-time 10 "$BASE_URL/another-path")
 assert_eq "$HTTP_CODE" "200" "cookie-authenticated request returns 200"
 
