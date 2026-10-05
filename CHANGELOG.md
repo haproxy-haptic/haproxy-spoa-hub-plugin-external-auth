@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-05
+
+### Fixed
+
+- Request headers whose names contain a dash (`X-Api-Key`, and the default `X-Forwarded-For` / `X-Forwarded-Proto` / `X-Forwarded-Host` / `X-Forwarded-Uri`) were never forwarded to the auth service: `forward_headers` entries and `hdr_<name>` argument names are now compared case-insensitively with `_` matching `-`.
+
+### Changed
+
+- Two `hdr_` arguments that name the same header (e.g. `hdr_x_api_key` and `hdr_X_API_KEY`) now fail the request instead of forwarding one of them at random.
+- Built against `haproxy-spoa-hub-plugin-api` 0.8: on `haproxy-spoa-hub` >= v0.13.0 the plugin's log records appear in the hub log.
+
 ## [0.5.0] - 2026-05-15
 
 ### Added

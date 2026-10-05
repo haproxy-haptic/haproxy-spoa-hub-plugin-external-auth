@@ -4,6 +4,14 @@ use haproxy_spoa_hub_plugin_api::{RVec, SpoeValue, TxnVariable};
 
 use crate::config::PluginConfig;
 
+/// The one spelling header names are compared in: lowercase, `-` as separator.
+/// SPOE argument names cannot contain `-`, so HAProxy captures `X-Api-Key` as
+/// `hdr_x_api_key` while `forward_headers` lists it as `X-Api-Key`.
+#[must_use]
+pub fn canonical_header_name(name: &str) -> String {
+    name.to_ascii_lowercase().replace('_', "-")
+}
+
 /// Resolved per-request parameters. Each field is either set by a SPOE
 /// message argument or falls back to the plugin-level config. The plugin
 /// builds one of these per request before calling `send_auth_request`,
@@ -13,6 +21,7 @@ use crate::config::PluginConfig;
 #[derive(Debug)]
 pub struct RequestParams<'a> {
     pub method: &'a str,
+    /// Entries in [`canonical_header_name`] form.
     pub forward_headers: &'a [String],
     pub extract_headers: &'a [String],
 }
@@ -79,6 +88,7 @@ impl AuthDecision {
     }
 }
 
+/// `headers` is keyed by [`canonical_header_name`].
 pub fn send_auth_request(
     agent: &ureq::Agent,
     config: &PluginConfig,
@@ -125,17 +135,26 @@ pub fn send_auth_request(
     }
 }
 
+/// The request headers listed in `forward_headers`. `headers` is keyed by
+/// [`canonical_header_name`].
+fn forwarded<'h>(
+    params: &RequestParams<'_>,
+    headers: &'h HashMap<String, String>,
+) -> impl Iterator<Item = (&'h str, &'h str)> {
+    headers
+        .iter()
+        .filter(|(name, _)| params.forward_headers.contains(name))
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+}
+
 /// Apply forward-headers to a ureq WithoutBody builder (GET/HEAD/DELETE).
 fn apply_headers_no_body(
     mut request: ureq::RequestBuilder<ureq::typestate::WithoutBody>,
     params: &RequestParams<'_>,
     headers: &HashMap<String, String>,
 ) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
-    for (name, value) in headers {
-        if params.forward_headers.iter().any(|h| h == name) {
-            let header_name = name.replace('_', "-");
-            request = request.header(&header_name, value);
-        }
+    for (name, value) in forwarded(params, headers) {
+        request = request.header(name, value);
     }
     request
 }
@@ -146,11 +165,8 @@ fn apply_headers_with_body(
     params: &RequestParams<'_>,
     headers: &HashMap<String, String>,
 ) -> ureq::RequestBuilder<ureq::typestate::WithBody> {
-    for (name, value) in headers {
-        if params.forward_headers.iter().any(|h| h == name) {
-            let header_name = name.replace('_', "-");
-            request = request.header(&header_name, value);
-        }
+    for (name, value) in forwarded(params, headers) {
+        request = request.header(name, value);
     }
     request
 }
