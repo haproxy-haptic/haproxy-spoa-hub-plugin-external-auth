@@ -1,5 +1,5 @@
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
@@ -123,7 +123,7 @@ define_plugin!(ExternalAuthPlugin, {
             .ok_or("plugin not initialized: config missing")?;
         let agent = AGENT.get().ok_or("plugin not initialized: agent missing")?;
 
-        let extracted = extract_message_args(message);
+        let extracted = extract_message_args(message)?;
 
         let auth_url = extracted.auth_url.ok_or(
             "missing required SPOE argument: auth_url — \
@@ -244,7 +244,9 @@ pub struct ExtractedArgs {
     pub client_key: Option<String>,
 }
 
-fn extract_message_args(message: &SpoeMessage) -> ExtractedArgs {
+fn extract_message_args(
+    message: &SpoeMessage,
+) -> Result<ExtractedArgs, Box<dyn std::error::Error + Send + Sync>> {
     let auth_url = message.get_string("auth_url").map(String::from);
     let path = message.get_string("path").unwrap_or_default().to_string();
     let method = message
@@ -253,7 +255,12 @@ fn extract_message_args(message: &SpoeMessage) -> ExtractedArgs {
         .map(String::from);
     let forward_headers = message
         .get_string("forward_headers")
-        .and_then(parse_header_list);
+        .and_then(parse_header_list)
+        .map(|list| {
+            list.iter()
+                .map(|h| auth::canonical_header_name(h))
+                .collect()
+        });
     let extract_headers = message
         .get_string("extract_headers")
         .and_then(parse_header_list);
@@ -267,16 +274,25 @@ fn extract_message_args(message: &SpoeMessage) -> ExtractedArgs {
         .map(String::from);
 
     let mut headers = HashMap::new();
+    let mut seen = HashSet::new();
     for Tuple2(key, value) in message.args.iter() {
-        let k = key.as_str();
-        if let Some(header_name) = k.strip_prefix("hdr_") {
-            if let SpoeValue::String(s) = value {
-                headers.insert(header_name.to_string(), s.as_str().to_string());
-            }
+        let Some(arg_name) = key.as_str().strip_prefix("hdr_") else {
+            continue;
+        };
+        let header_name = auth::canonical_header_name(arg_name);
+        // args is a hash map: on a collision, which value wins would be random.
+        if !seen.insert(header_name.clone()) {
+            return Err(format!(
+                "two hdr_ SPOE arguments name header {header_name}; keep one per header"
+            )
+            .into());
+        }
+        if let SpoeValue::String(s) = value {
+            headers.insert(header_name, s.as_str().to_string());
         }
     }
 
-    ExtractedArgs {
+    Ok(ExtractedArgs {
         auth_url,
         path,
         method,
@@ -285,7 +301,7 @@ fn extract_message_args(message: &SpoeMessage) -> ExtractedArgs {
         headers,
         client_cert,
         client_key,
-    }
+    })
 }
 
 /// Build (or fetch from cache) a ureq Agent configured with the given
@@ -371,8 +387,10 @@ fn parse_header_list(s: &str) -> Option<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MtlsAgentCache, agent_for_request, parse_header_list};
-    use crate::config::{DEFAULT_MTLS_CACHE_CAPACITY, PluginConfig};
+    use super::{MtlsAgentCache, agent_for_request, extract_message_args, parse_header_list};
+    use crate::auth::{RequestParams, send_auth_request};
+    use crate::config::{DEFAULT_FORWARD_HEADERS, DEFAULT_MTLS_CACHE_CAPACITY, PluginConfig};
+    use haproxy_spoa_hub_plugin_api::{RHashMap, RString, SpoeMessage, SpoeValue};
     use std::time::Duration;
 
     fn test_config() -> PluginConfig {
@@ -511,5 +529,148 @@ mod tests {
             msg.contains("PEM") || msg.contains("pem"),
             "expected error message to mention PEM, got: {msg}"
         );
+    }
+
+    fn message(args: &[(&str, &str)]) -> SpoeMessage {
+        let mut map = RHashMap::new();
+        for (k, v) in args {
+            map.insert(RString::from(*k), SpoeValue::String(RString::from(*v)));
+        }
+        SpoeMessage {
+            name: "check-auth".into(),
+            args: map,
+            stream_id: 0,
+            frame_id: 0,
+        }
+    }
+
+    /// Sends `msg` through the SPOE argument path to a local auth server and
+    /// returns the headers it received, names lowercased.
+    fn forwarded_via_spoe(msg: &SpoeMessage) -> Vec<(String, String)> {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let auth_url = format!("http://{}", server.server_addr().to_ip().unwrap());
+        let handle = std::thread::spawn(move || {
+            let req = server.recv().unwrap();
+            let got: Vec<(String, String)> = req
+                .headers()
+                .iter()
+                .map(|h| {
+                    (
+                        h.field.as_str().as_str().to_lowercase(),
+                        h.value.to_string(),
+                    )
+                })
+                .collect();
+            req.respond(tiny_http::Response::from_string("").with_status_code(204))
+                .unwrap();
+            got
+        });
+
+        let config = PluginConfig {
+            forward_headers: DEFAULT_FORWARD_HEADERS
+                .iter()
+                .map(|h| h.to_string())
+                .collect(),
+            ..test_config()
+        };
+        let extracted = extract_message_args(msg).expect("valid message");
+        let forward = extracted
+            .forward_headers
+            .unwrap_or_else(|| config.forward_headers.clone());
+        let params = RequestParams {
+            method: &config.method,
+            forward_headers: &forward,
+            extract_headers: &config.extract_headers,
+        };
+        let decision = send_auth_request(
+            &test_default_agent(),
+            &config,
+            &params,
+            &auth_url,
+            "/",
+            &extracted.headers,
+        );
+        assert!(
+            decision.allowed,
+            "auth request failed: {:?}",
+            decision.error
+        );
+        handle.join().unwrap()
+    }
+
+    fn received<'a>(got: &'a [(String, String)], name: &str) -> Vec<&'a str> {
+        got.iter()
+            .filter(|(n, _)| n == name)
+            .map(|(_, v)| v.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn dashed_forward_header_reaches_auth_service() {
+        let got = forwarded_via_spoe(&message(&[
+            ("forward_headers", "X-Api-Key"),
+            ("hdr_x_api_key", "k1"),
+        ]));
+        assert_eq!(received(&got, "x-api-key"), vec!["k1"]);
+    }
+
+    #[test]
+    fn forward_header_spellings_match_case_and_separator_insensitively() {
+        for listed in ["x-api-key", "X-API-KEY", "x_api_key", "X_Api_Key"] {
+            for arg in ["hdr_x_api_key", "hdr_X_Api_Key"] {
+                let got = forwarded_via_spoe(&message(&[("forward_headers", listed), (arg, "k1")]));
+                assert_eq!(
+                    received(&got, "x-api-key"),
+                    vec!["k1"],
+                    "forward_headers={listed} arg={arg}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn default_forward_headers_reach_auth_service() {
+        let got = forwarded_via_spoe(&message(&[
+            ("hdr_authorization", "Bearer t"),
+            ("hdr_x_forwarded_for", "10.0.0.1"),
+            ("hdr_x_forwarded_proto", "https"),
+            ("hdr_x_forwarded_host", "example.com"),
+            ("hdr_x_forwarded_uri", "/a"),
+        ]));
+        assert_eq!(received(&got, "authorization"), vec!["Bearer t"]);
+        assert_eq!(received(&got, "x-forwarded-for"), vec!["10.0.0.1"]);
+        assert_eq!(received(&got, "x-forwarded-proto"), vec!["https"]);
+        assert_eq!(received(&got, "x-forwarded-host"), vec!["example.com"]);
+        assert_eq!(received(&got, "x-forwarded-uri"), vec!["/a"]);
+    }
+
+    #[test]
+    fn only_listed_headers_are_forwarded() {
+        let got = forwarded_via_spoe(&message(&[
+            ("forward_headers", "x-api-key"),
+            ("hdr_x_api_key", "k1"),
+            ("hdr_x_api_key_extra", "no"),
+            ("hdr_x_api", "no"),
+            ("hdr_authorization", "no"),
+        ]));
+        assert_eq!(received(&got, "x-api-key"), vec!["k1"]);
+        assert!(received(&got, "x-api-key-extra").is_empty());
+        assert!(received(&got, "x-api").is_empty());
+        assert!(received(&got, "authorization").is_empty());
+    }
+
+    #[test]
+    fn header_args_naming_the_same_header_are_rejected() {
+        let err = extract_message_args(&message(&[("hdr_x_api_key", "a"), ("hdr_X_API_KEY", "b")]))
+            .err()
+            .expect("two args for one header must be rejected");
+        assert!(err.to_string().contains("x-api-key"), "got: {err}");
+    }
+
+    #[test]
+    fn header_args_naming_the_same_header_are_rejected_when_one_is_absent() {
+        let mut msg = message(&[("hdr_x_api_key", "a")]);
+        msg.args.insert("hdr_X_API_KEY".into(), SpoeValue::Null);
+        assert!(extract_message_args(&msg).is_err());
     }
 }

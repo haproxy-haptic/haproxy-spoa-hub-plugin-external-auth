@@ -205,13 +205,15 @@ backend app
 
 **Default `forward_headers`**: `["authorization", "cookie", "x-forwarded-for", "x-forwarded-proto", "x-forwarded-host", "x-forwarded-uri"]`
 
+Header names match case-insensitively, and `_` matches `-`: SPOE argument names can't contain `-`, so `hdr_x_api_key` carries the `X-Api-Key` header that `forward_headers` lists as `X-Api-Key`. The auth service receives the dashed name. Give each header one `hdr_` argument; two arguments naming the same header fail the request.
+
 ### SPOE Message Arguments
 
 | Argument | Type | Required | Description |
 |----------|------|----------|-------------|
 | `auth_url` | string | yes | URL of the auth service (via `str()` or `var()`) |
 | `path` | string | no | Request path appended to `auth_url` (omit for fixed-endpoint auth services like oauth2-proxy) |
-| `hdr_<name>` | string | no | Header values to forward (e.g., `hdr_authorization`) |
+| `hdr_<name>` | string | no | Header values to forward (e.g., `hdr_x_api_key` for `X-Api-Key`) |
 
 ### Output Variables
 

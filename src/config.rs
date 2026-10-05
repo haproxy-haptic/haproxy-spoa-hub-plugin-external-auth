@@ -1,6 +1,8 @@
 use haproxy_spoa_hub_plugin_api::PluginContext;
 
-const DEFAULT_FORWARD_HEADERS: &[&str] = &[
+use crate::auth::canonical_header_name;
+
+pub(crate) const DEFAULT_FORWARD_HEADERS: &[&str] = &[
     "authorization",
     "cookie",
     "x-forwarded-for",
@@ -83,7 +85,7 @@ impl PluginConfig {
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
+                    .filter_map(|v| v.as_str().map(canonical_header_name))
                     .collect()
             })
             .unwrap_or_else(|| {
