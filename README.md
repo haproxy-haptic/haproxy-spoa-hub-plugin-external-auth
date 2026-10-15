@@ -1,8 +1,8 @@
 # HAProxy SPOA Hub — External Auth Plugin
 
-[![Build Status](https://gitlab.com/haproxy-haptic/haproxy-spoa-hub-plugin-external-auth/badges/main/pipeline.svg)](https://gitlab.com/haproxy-haptic/haproxy-spoa-hub-plugin-external-auth/-/pipelines)
+[![CI](https://github.com/haproxy-haptic/haproxy-spoa-hub-plugin-external-auth/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/haproxy-haptic/haproxy-spoa-hub-plugin-external-auth/actions/workflows/ci.yml)
 
-A [haproxy-spoa-hub](https://gitlab.com/haproxy-haptic/haproxy-spoa-hub) plugin that implements external authentication via HTTP subrequests, similar to nginx's `auth_request` module.
+A [haproxy-spoa-hub](https://github.com/haproxy-haptic/haproxy-spoa-hub) plugin that implements external authentication via HTTP subrequests, similar to nginx's `auth_request` module.
 
 ## Overview
 
@@ -14,7 +14,7 @@ The plugin supports configurable header forwarding, response header extraction (
 
 ### Prerequisites
 
-- [haproxy-spoa-hub](https://gitlab.com/haproxy-haptic/haproxy-spoa-hub) built and running
+- [haproxy-spoa-hub](https://github.com/haproxy-haptic/haproxy-spoa-hub) built and running
 - HAProxy >= 3.0 with SPOE support
 - Rust toolchain (>= 1.86) for building the plugin
 
@@ -26,7 +26,7 @@ cargo build --release
 
 The output is `target/release/libexternal_auth_plugin.so`. Copy it to the hub's plugin directory.
 
-Pre-built binaries for all supported architectures are available on the [releases page](https://gitlab.com/haproxy-haptic/haproxy-spoa-hub-plugin-external-auth/-/releases).
+Pre-built binaries for all supported architectures are available on the [releases page](https://github.com/haproxy-haptic/haproxy-spoa-hub-plugin-external-auth/releases).
 
 ### Supported Architectures
 

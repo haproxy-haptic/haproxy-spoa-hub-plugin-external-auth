@@ -1,0 +1,152 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  # github.workflow is the caller's name under workflow_call, so a release run never cancels branch CI.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # renovate: datasource=docker depName=rust
+  RUST_VERSION: "1.94"
+  # renovate: datasource=crate depName=cargo-auditable
+  CARGO_AUDITABLE_VERSION: "0.7.4"
+  CARGO_INCREMENTAL: "0"
+  GLIBC_VERSION: "2.36"
+  LIB_NAME: libexternal_auth_plugin
+
+jobs:
+  toolchain:
+    runs-on: ubuntu-24.04
+    outputs:
+      rust-image: rust:${{ env.RUST_VERSION }}-bookworm
+    steps:
+      - run: echo "rust:${RUST_VERSION}-bookworm"
+
+  fmt:
+    needs: toolchain
+    runs-on: ubuntu-24.04
+    container: ${{ needs.toolchain.outputs.rust-image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup component add rustfmt
+      - run: cargo fmt -- --check
+
+  clippy:
+    needs: toolchain
+    runs-on: ubuntu-24.04
+    container: ${{ needs.toolchain.outputs.rust-image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup component add clippy
+      - run: cargo clippy --workspace -- -D warnings
+
+  test:
+    needs: toolchain
+    runs-on: ubuntu-24.04
+    container: ${{ needs.toolchain.outputs.rust-image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: cargo test --workspace
+
+  bench:
+    needs: toolchain
+    runs-on: ubuntu-24.04
+    container: ${{ needs.toolchain.outputs.rust-image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: cargo bench 2>&1 | tee bench-output.txt
+        shell: bash -o pipefail {0}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bench
+          path: |
+            bench-output.txt
+            target/criterion/
+          retention-days: 7
+
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      KIND_VERSION: v0.27.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install kind and kubectl
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSLo "$RUNNER_TEMP/bin/kind" "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          curl -fsSLo "$RUNNER_TEMP/bin/kubectl" "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x "$RUNNER_TEMP/bin/kind" "$RUNNER_TEMP/bin/kubectl"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: tests/e2e/run.sh
+
+  build:
+    needs: toolchain
+    runs-on: ubuntu-24.04
+    container: ${{ needs.toolchain.outputs.rust-image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            rust-target: x86_64-unknown-linux-gnu
+          - arch: arm64
+            rust-target: aarch64-unknown-linux-gnu
+            cross-pkg: gcc-aarch64-linux-gnu
+            cross-linker: aarch64-linux-gnu-gcc
+          - arch: armv7
+            rust-target: armv7-unknown-linux-gnueabihf
+            cross-pkg: gcc-arm-linux-gnueabihf
+            cross-linker: arm-linux-gnueabihf-gcc
+    env:
+      ARCH: ${{ matrix.arch }}
+      RUST_TARGET: ${{ matrix.rust-target }}
+      CROSS_PKG: ${{ matrix.cross-pkg }}
+      CROSS_LINKER: ${{ matrix.cross-linker }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install target toolchain
+        run: |
+          rustup target add "${RUST_TARGET}"
+          if [ -n "${CROSS_PKG}" ]; then
+            apt-get update -qq && apt-get install -y -qq "${CROSS_PKG}" >/dev/null
+            mkdir -p .cargo
+            printf '[target.%s]\nlinker = "%s"\n' "${RUST_TARGET}" "${CROSS_LINKER}" > .cargo/config.toml
+          fi
+      # Embeds the dependency list in the .so so syft and grype can enumerate it.
+      - run: cargo install --locked "cargo-auditable@${CARGO_AUDITABLE_VERSION}"
+      - run: cargo auditable build --release --target "${RUST_TARGET}"
+      - name: Collect artifact
+        run: |
+          NAME="${LIB_NAME}-${ARCH}-glibc${GLIBC_VERSION}.so"
+          mkdir -p artifacts
+          cp "target/${RUST_TARGET}/release/${LIB_NAME}.so" "artifacts/${NAME}"
+          ls -lh "artifacts/${NAME}"
+          (cd artifacts && sha256sum "${NAME}" > "${NAME}.sha256")
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-${{ matrix.arch }}
+          path: artifacts/
+          retention-days: 7
+          if-no-files-found: error

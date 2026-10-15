@@ -5,5 +5,5 @@ COPY src/ src/
 COPY benches/ benches/
 RUN cargo build --release
 
-FROM registry.gitlab.com/haproxy-haptic/haproxy-spoa-hub:latest
+FROM ghcr.io/haproxy-haptic/haproxy-spoa-hub:latest
 COPY --from=builder /build/target/release/libexternal_auth_plugin.so /etc/haproxy-spoa-hub/plugins/
