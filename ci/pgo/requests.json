@@ -1,0 +1,14 @@
+[
+  {
+    "message": "check-auth",
+    "args": {
+      "auth_url": "http://$upstream/auth",
+      "method": "GET",
+      "path": "/catalog"
+    },
+    "expect": {
+      "external_auth.allowed": true
+    },
+    "requires_http": true
+  }
+]
