@@ -1,0 +1,6 @@
+[[plugins]]
+name = "external_auth"
+library = "libexternal_auth_plugin.so"
+messages = ["check-auth"]
+[plugins.params]
+allow_plaintext = true
